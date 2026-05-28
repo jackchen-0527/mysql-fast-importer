@@ -1,12 +1,16 @@
 #include <windows.h>
-
 #define LABEL_USERNAME 1001
 #define LABEL_PASSWORD 1002
 #define SQL_FILE_PATH 1003
-#define CHOICE_SQL_FILE 1003
+#define CHOICE_SQL_FILE 1004
 #define START_IMPORT_SQL_DATA 1005
 #define END_IMPORT_SQL_DATA 1006
 #define CHECK_MYSQL_ENVIRONMENT 1007
+#define LOG_LISTBOX_ID 1008
+HWND LogList = NULL;
+
+int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
+
 /* This is where all the input to the window goes to */
 LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
@@ -14,44 +18,79 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
-		CreateWindowW(L"STATIC", L"用户名:",
-					  WS_CHILD | WS_VISIBLE | SS_CENTER,
-					  20, 20, 80, 25,
-					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | SS_LEFT | WS_BORDER,
-					  100, 20, 150, 25,
-					  hwnd, (HMENU)LABEL_USERNAME, GetModuleHandle(NULL), NULL);
+		const int LABEL_WIDTH = 70;
+		const int EDIT_WIDTH = 180;
+		const int COMP_HEIGHT = 25;
+		const int GAP_Y = 15;
 
-		CreateWindowW(L"STATIC", L"密码",
-					  WS_CHILD | WS_VISIBLE | SS_CENTER,
-					  20, 60, 80, 25,
+		CreateWindowW(L"STATIC", L"用户名：",
+					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+					  20, 20, LABEL_WIDTH, COMP_HEIGHT,
 					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER,
-					  100, 60, 150, 25,
-					  hwnd, (HMENU)LABEL_PASSWORD, GetModuleHandle(NULL), NULL);
+					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
+					  20 + LABEL_WIDTH, 20, EDIT_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)LABEL_USERNAME, GetModuleHandle(NULL), NULL);
+		CreateWindowW(L"STATIC", L"密  码：",
+					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+					  20, 60, LABEL_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | WS_BORDER | SS_LEFT | WS_DISABLED,
-					  20, 100, 100, 25,
+					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_PASSWORD | WS_TABSTOP,
+					  20 + LABEL_WIDTH, 60, EDIT_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)LABEL_PASSWORD, GetModuleHandle(NULL), NULL);
+		CreateWindowW(L"STATIC", L"SQL文件：",
+					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+					  20, 100, LABEL_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
+		CreateWindowW(L"EDIT", L"尚未选择任何文件...",
+					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_READONLY,
+					  20 + LABEL_WIDTH, 100, EDIT_WIDTH - 85, COMP_HEIGHT,
 					  hwnd, (HMENU)SQL_FILE_PATH, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"选择文件",
+		CreateWindowW(L"BUTTON", L"浏览...",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  120, 100, 100, 25,
+					  20 + LABEL_WIDTH + (EDIT_WIDTH - 80), 100, 80, COMP_HEIGHT,
 					  hwnd, (HMENU)CHOICE_SQL_FILE, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"开始导入",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  20, 140, 100, 25,
+					  20, 145, 80, 30,
 					  hwnd, (HMENU)START_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"结束导入",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  130, 140, 100, 25,
+					  110, 145, 80, 30,
 					  hwnd, (HMENU)END_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"检测mysql环境",
+		CreateWindowW(L"BUTTON", L"检测 MySQL 环境",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  250, 140, 130, 25,
+					  200, 145, 120, 30,
 					  hwnd, (HMENU)CHECK_MYSQL_ENVIRONMENT, GetModuleHandle(NULL), NULL);
+		LogList = CreateWindowW(L"LISTBOX", L"",
+								WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
+								20, 195, 310, 120,
+								hwnd, (HMENU)LOG_LISTBOX_ID, GetModuleHandle(NULL), NULL);
+		break;
+	}
 
+	case WM_COMMAND:
+	{
+		switch (LOWORD(wParam))
+		{
+		case CHOICE_SQL_FILE:
+		{
+			/* code */
+			wchar_t file_path[MAX_PATH] = {0};
+			if (GeSQLtFilePath(hwnd, file_path, MAX_PATH))
+			{
+				HWND hEditFilePath = GetDlgItem(hwnd, SQL_FILE_PATH);
+				SetWindowTextW(hEditFilePath, file_path);
+				SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 成功选择 SQL 文件");
+				MessageBoxW(hwnd, L"路径选择成功", L"提示", MB_OK);
+			}
+			break;
+		}
+		default:
+			return 0;
+			break;
+		}
 		break;
 	}
 
@@ -119,4 +158,25 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		DispatchMessage(&msg);	/* Send it to WndProc */
 	}
 	return msg.wParam;
+}
+
+/**
+ * 浏览 获取sql文件路径
+ */
+int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len)
+{
+	OPENFILENAMEW ofn;
+	ZeroMemory(&ofn, sizeof(ofn));
+	ofn.lStructSize = sizeof(ofn);
+	ofn.hwndOwner = hwnd;
+	ofn.lpstrFile = file_path;
+	ofn.nMaxFile = max_len;
+	ofn.lpstrFilter = L"SQL Files (*.sql)\0*.sql\0All Files (*.*)\0*.*\0";
+	ofn.nFilterIndex = 1;
+	ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_HIDEREADONLY;
+	if (GetOpenFileNameW(&ofn) == TRUE)
+	{
+		return 1;
+	}
+	return 0;
 }
