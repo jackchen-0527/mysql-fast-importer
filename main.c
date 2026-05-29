@@ -1,4 +1,5 @@
 #include <windows.h>
+#include <process.h>
 #define LABEL_USERNAME 1001
 #define LABEL_PASSWORD 1002
 #define SQL_FILE_PATH 1003
@@ -10,7 +11,8 @@
 HWND LogList = NULL;
 
 int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
-
+wchar_t GetCleanUserName();
+wchar_t GetCleanPassword();
 /* This is where all the input to the window goes to */
 LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
@@ -85,6 +87,32 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 成功选择 SQL 文件");
 				MessageBoxW(hwnd, L"路径选择成功", L"提示", MB_OK);
 			}
+			else
+			{
+				MessageBoxW(hwnd, L"未选择文件", L"提示", MB_OK);
+			}
+			break;
+		}
+		case START_IMPORT_SQL_DATA:
+		{
+			wchar_t wait_clean_username[128] = {0};
+			wchar_t wait_clean_password[128] = {0};
+			wchar_t sql_file_path[MAX_PATH] = {0};
+
+			HWND hEditUser = GetDlgItem(hwnd, LABEL_USERNAME);
+			HWND hEditPass = GetDlgItem(hwnd, LABEL_PASSWORD);
+			HWND hEditPath = GetDlgItem(hwnd, SQL_FILE_PATH);
+
+			GetWindowTextW(hEditUser, wait_clean_username, 128);
+			GetWindowTextW(hEditPass, wait_clean_password, 128);
+			GetWindowTextW(hEditPath, sql_file_path, MAX_PATH);
+
+			// TrimWCharString(wait_clean_username,wait_clean_password);
+
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 成功读取输入框物资！");
+
+			// ImportParam* param = (ImportParam*)malloc(sizeof(ImportParam));
+
 			break;
 		}
 		default:
@@ -179,4 +207,17 @@ int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len)
 		return 1;
 	}
 	return 0;
+}
+
+/**
+ * 处理database用户名
+ */
+wchar_t GetCleanUserName()
+{
+}
+/**
+ * 处理database密码
+ */
+wchar_t GetCleanPassword()
+{
 }
