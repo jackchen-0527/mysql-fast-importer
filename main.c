@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <process.h>
+#include <stdio.h>
 #define LABEL_USERNAME 1001
 #define LABEL_PASSWORD 1002
 #define SQL_FILE_PATH 1003
@@ -8,11 +9,70 @@
 #define END_IMPORT_SQL_DATA 1006
 #define CHECK_MYSQL_ENVIRONMENT 1007
 #define LOG_LISTBOX_ID 1008
+#define LABEL_DBNAME 1009
 HWND LogList = NULL;
 
+typedef struct
+{
+	HWND hwndParent;
+	wchar_t dbName[128];
+	wchar_t userName[128];
+	wchar_t passWord[128];
+	wchar_t filePath[MAX_PATH];
+
+} ImportParam;
+
 int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
-wchar_t GetCleanUserName();
-wchar_t GetCleanPassword();
+void CleanSpace(wchar_t *str);
+DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
+{
+	ImportParam *param = (ImportParam *)lpParam;
+	HWND hwnd = param->hwndParent;
+	CleanSpace(param->dbName);
+	CleanSpace(param->userName);
+	CleanSpace(param->passWord);
+	CleanSpace(param->filePath);
+	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"数据清洗完成，正在生成 CMD 命令...");
+	char cUser[128], cPass[128], cPath[MAX_PATH], cDB[128];
+	WideCharToMultiByte(CP_ACP, 0, param->dbName, -1, cDB, sizeof(cDB), NULL, NULL);
+	WideCharToMultiByte(CP_ACP, 0, param->userName, -1, cUser, sizeof(cUser), NULL, NULL);
+	WideCharToMultiByte(CP_ACP, 0, param->passWord, -1, cPass, sizeof(cPass), NULL, NULL);
+	WideCharToMultiByte(CP_ACP, 0, param->filePath, -1, cPath, sizeof(cPath), NULL, NULL);
+	char cmdLine[1024];
+	snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /k \"mysql -u %s -p%s %s < \"%s\"\"", cUser, cPass, cDB, cPath);
+	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"正在链接数据库，全力导入中...");
+	STARTUPINFOA si;
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags |= STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_SHOW;
+	ZeroMemory(&pi, sizeof(pi));
+	if (CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
+	{
+		WaitForSingleObject(pi.hProcess, INFINITE);
+		DWORD exitCode;
+		GetExitCodeProcess(pi.hProcess, &exitCode);
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
+		if (exitCode == 0)
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"SQL文件已完美导入数据库");
+			MessageBoxW(hwnd, L"SQL 数据库文件导入成功！", L"恭喜", MB_OK | MB_ICONINFORMATION);
+		}
+		else
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[失败,请检查用户名、密码或 MySQL 状态");
+			MessageBoxW(hwnd, L"导入失败！请检查配置或数据库环境。", L"错误", MB_OK | MB_ICONERROR);
+		}
+	}
+	else
+	{
+		SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"错误,无法调用系统 CMD 引擎。");
+	}
+	free(param);
+	return 0;
+}
 /* This is where all the input to the window goes to */
 LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
@@ -20,54 +80,66 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 	{
 	case WM_CREATE:
 	{
-		const int LABEL_WIDTH = 70;
+		const int START_X = 20;
+		const int LABEL_WIDTH = 80;
 		const int EDIT_WIDTH = 180;
 		const int COMP_HEIGHT = 25;
-		const int GAP_Y = 15;
+		const int LINE_SPACE = 40;
 
-		CreateWindowW(L"STATIC", L"用户名：",
+		CreateWindowW(L"STATIC", L"数据库名：",
 					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  20, 20, LABEL_WIDTH, COMP_HEIGHT,
+					  START_X, 20, LABEL_WIDTH, COMP_HEIGHT,
 					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"EDIT", L"",
 					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
-					  20 + LABEL_WIDTH, 20, EDIT_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)LABEL_USERNAME, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"STATIC", L"密  码：",
+					  START_X + LABEL_WIDTH, 20, EDIT_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)LABEL_DBNAME, GetModuleHandle(NULL), NULL);
+
+		CreateWindowW(L"STATIC", L"用 户 名：",
 					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  20, 60, LABEL_WIDTH, COMP_HEIGHT,
+					  START_X, 60, LABEL_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
+		CreateWindowW(L"EDIT", L"",
+					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
+					  START_X + LABEL_WIDTH, 60, EDIT_WIDTH, COMP_HEIGHT,
+					  hwnd, (HMENU)LABEL_USERNAME, GetModuleHandle(NULL), NULL);
+
+		CreateWindowW(L"STATIC", L"密    码：",
+					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+					  START_X, 100, LABEL_WIDTH, COMP_HEIGHT,
 					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"EDIT", L"",
 					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_PASSWORD | WS_TABSTOP,
-					  20 + LABEL_WIDTH, 60, EDIT_WIDTH, COMP_HEIGHT,
+					  START_X + LABEL_WIDTH, 100, EDIT_WIDTH, COMP_HEIGHT,
 					  hwnd, (HMENU)LABEL_PASSWORD, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"STATIC", L"SQL文件：",
+
+		CreateWindowW(L"STATIC", L"SQL 文件：",
 					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  20, 100, LABEL_WIDTH, COMP_HEIGHT,
+					  START_X, 140, LABEL_WIDTH, COMP_HEIGHT,
 					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"EDIT", L"尚未选择任何文件...",
 					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_READONLY,
-					  20 + LABEL_WIDTH, 100, EDIT_WIDTH - 85, COMP_HEIGHT,
+					  START_X + LABEL_WIDTH, 140, EDIT_WIDTH - 85, COMP_HEIGHT,
 					  hwnd, (HMENU)SQL_FILE_PATH, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"浏览...",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  20 + LABEL_WIDTH + (EDIT_WIDTH - 80), 100, 80, COMP_HEIGHT,
+					  START_X + LABEL_WIDTH + (EDIT_WIDTH - 80), 140, 80, COMP_HEIGHT,
 					  hwnd, (HMENU)CHOICE_SQL_FILE, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"开始导入",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  20, 145, 80, 30,
+					  START_X, 185, 80, 30,
 					  hwnd, (HMENU)START_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"结束导入",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  110, 145, 80, 30,
+					  110, 185, 80, 30,
 					  hwnd, (HMENU)END_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
 		CreateWindowW(L"BUTTON", L"检测 MySQL 环境",
 					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  200, 145, 120, 30,
+					  200, 185, 120, 30,
 					  hwnd, (HMENU)CHECK_MYSQL_ENVIRONMENT, GetModuleHandle(NULL), NULL);
 		LogList = CreateWindowW(L"LISTBOX", L"",
 								WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-								20, 195, 310, 120,
+								START_X, 230, 300, 120,
 								hwnd, (HMENU)LOG_LISTBOX_ID, GetModuleHandle(NULL), NULL);
 		break;
 	}
@@ -95,23 +167,41 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		}
 		case START_IMPORT_SQL_DATA:
 		{
+			wchar_t wait_clean_dbname[128] = {0};
 			wchar_t wait_clean_username[128] = {0};
 			wchar_t wait_clean_password[128] = {0};
 			wchar_t sql_file_path[MAX_PATH] = {0};
 
+			HWND hEditDB = GetDlgItem(hwnd, LABEL_DBNAME);
 			HWND hEditUser = GetDlgItem(hwnd, LABEL_USERNAME);
 			HWND hEditPass = GetDlgItem(hwnd, LABEL_PASSWORD);
 			HWND hEditPath = GetDlgItem(hwnd, SQL_FILE_PATH);
 
+			GetWindowTextW(hEditDB, wait_clean_dbname, 128);
 			GetWindowTextW(hEditUser, wait_clean_username, 128);
 			GetWindowTextW(hEditPass, wait_clean_password, 128);
 			GetWindowTextW(hEditPath, sql_file_path, MAX_PATH);
 
-			// TrimWCharString(wait_clean_username,wait_clean_password);
+			if (wcslen(sql_file_path) == 0 || wcscmp(sql_file_path, L"尚未选择任何文件...") == 0)
+			{
+				MessageBoxW(hwnd, L"请先选择要导入的 SQL 文件！", L"提示", MB_OK | MB_ICONWARNING);
+				break;
+			}
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 主线程就绪");
 
-			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 成功读取输入框物资！");
+			ImportParam *param = (ImportParam *)malloc(sizeof(ImportParam));
+			param->hwndParent = hwnd;
+			wcscpy_s(param->dbName, 128, wait_clean_dbname);
+			wcscpy_s(param->userName, 128, wait_clean_username);
+			wcscpy_s(param->passWord, 128, wait_clean_password);
+			wcscpy_s(param->filePath, MAX_PATH, sql_file_path);
 
-			// ImportParam* param = (ImportParam*)malloc(sizeof(ImportParam));
+			HANDLE hThread = CreateThread(NULL, 0, BackgroundImportThread, param, 0, NULL);
+
+			if (hThread)
+			{
+				CloseHandle(hThread);
+			}
 
 			break;
 		}
@@ -208,16 +298,23 @@ int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len)
 	}
 	return 0;
 }
-
 /**
- * 处理database用户名
+ * 清洗数据格式
  */
-wchar_t GetCleanUserName()
+void CleanSpace(wchar_t *str)
 {
-}
-/**
- * 处理database密码
- */
-wchar_t GetCleanPassword()
-{
+	if (!str || *str == L'\0')
+		return;
+	wchar_t *start = str;
+	while (*start && iswspace(*start))
+		start++;
+	int len = wcslen(start);
+	wchar_t *end = start + len - 1;
+	while (end >= start && iswspace(*end))
+	{
+		*end = L'\0';
+		end--;
+	}
+	if (start != str)
+		memmove(str, start, (wcslen(start) + 1) * sizeof(wchar_t));
 }
