@@ -1,6 +1,7 @@
 #include <windows.h>
 #include <process.h>
 #include <stdio.h>
+#include <tlhelp32.h>
 #define LABEL_USERNAME 1001
 #define LABEL_PASSWORD 1002
 #define SQL_FILE_PATH 1003
@@ -11,7 +12,8 @@
 #define LOG_LISTBOX_ID 1008
 #define LABEL_DBNAME 1009
 HWND LogList = NULL;
-
+DWORD g_CmdProcessId = 0;	// cmd.exe  PID
+DWORD g_MySqlProcessId = 0; //mysql.exe PID
 typedef struct
 {
 	HWND hwndParent;
@@ -24,6 +26,7 @@ typedef struct
 
 int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
 void CleanSpace(wchar_t *str);
+void Kill_Mysql_Process();
 DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 {
 	ImportParam *param = (ImportParam *)lpParam;
@@ -39,7 +42,7 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 	WideCharToMultiByte(CP_ACP, 0, param->passWord, -1, cPass, sizeof(cPass), NULL, NULL);
 	WideCharToMultiByte(CP_ACP, 0, param->filePath, -1, cPath, sizeof(cPath), NULL, NULL);
 	char cmdLine[1024];
-	snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /k \"mysql -u %s -p%s %s < \"%s\"\"", cUser, cPass, cDB, cPath);
+	snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /c \"mysql -u %s -p%s %s < \"%s\"\"", cUser, cPass, cDB, cPath);
 	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"正在链接数据库，全力导入中...");
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
@@ -50,6 +53,32 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 	ZeroMemory(&pi, sizeof(pi));
 	if (CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
 	{
+		g_CmdProcessId = pi.dwProcessId;
+		HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+		if (hSnapshot != INVALID_HANDLE_VALUE)
+		{
+			PROCESSENTRY32W pe;
+			pe.dwSize = sizeof(PROCESSENTRY32W);
+			if (Process32FirstW(hSnapshot, &pe))
+			{
+				do
+				{
+					if (_wcsicmp(pe.szExeFile, L"mysql.exe") == 0 && pe.th32ParentProcessID == g_CmdProcessId)
+					{
+						g_MySqlProcessId = pe.th32ProcessID;
+						break;
+					}
+				} while (Process32NextW(hSnapshot, &pe));
+			}
+			CloseHandle(hSnapshot);
+		}
+		if(g_MySqlProcessId!=0){
+			wchar_t logBuf[128]={0};
+			swprintf_s(logBuf, 128, L"[路径二] 成功精准锁定目标 mysql.exe，PID: %lu", g_MySqlProcessId);
+			SendMessageW(hwnd,LB_ADDSTRING,0,(LPARAM)logBuf);
+		}
+
+
 		WaitForSingleObject(pi.hProcess, INFINITE);
 		DWORD exitCode;
 		GetExitCodeProcess(pi.hProcess, &exitCode);
@@ -157,10 +186,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 				HWND hEditFilePath = GetDlgItem(hwnd, SQL_FILE_PATH);
 				SetWindowTextW(hEditFilePath, file_path);
 				SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 成功选择 SQL 文件");
-				MessageBoxW(hwnd, L"路径选择成功", L"提示", MB_OK);
+				MessageBoxW(hwnd, L"成功选择 SQL 文件", L"提示", MB_OK);
 			}
 			else
 			{
+				SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示]未选择文件");
 				MessageBoxW(hwnd, L"未选择文件", L"提示", MB_OK);
 			}
 			break;
@@ -204,6 +234,10 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 			}
 
 			break;
+		}
+		case END_IMPORT_SQL_DATA:
+		{
+			Kill_Mysql_Process();
 		}
 		default:
 			return 0;
@@ -252,7 +286,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 		return 0;
 	}
 
-	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE, "WindowClass", "SQL快速导入工具(mysql-fast-importer)", WS_VISIBLE | WS_OVERLAPPEDWINDOW,
+	hwnd = CreateWindowEx(WS_EX_CLIENTEDGE, "WindowClass", "mysql-fast-importer", WS_VISIBLE | WS_OVERLAPPEDWINDOW,
 						  CW_USEDEFAULT, /* x */
 						  CW_USEDEFAULT, /* y */
 						  640,			 /* width */
@@ -317,4 +351,8 @@ void CleanSpace(wchar_t *str)
 	}
 	if (start != str)
 		memmove(str, start, (wcslen(start) + 1) * sizeof(wchar_t));
+}
+
+void Kill_Mysql_Process(){
+	
 }
