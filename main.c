@@ -13,7 +13,7 @@
 #define LABEL_DBNAME 1009
 HWND LogList = NULL;
 DWORD g_CmdProcessId = 0;	// cmd.exe  PID
-DWORD g_MySqlProcessId = 0; //mysql.exe PID
+DWORD g_MySqlProcessId = 0; // mysql.exe PID
 typedef struct
 {
 	HWND hwndParent;
@@ -26,7 +26,8 @@ typedef struct
 
 int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
 void CleanSpace(wchar_t *str);
-void Kill_Mysql_Process();
+void Kill_Mysql_Process(DWORD sign);
+void Check_Mysql_Env();
 DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 {
 	ImportParam *param = (ImportParam *)lpParam;
@@ -72,12 +73,12 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 			}
 			CloseHandle(hSnapshot);
 		}
-		if(g_MySqlProcessId!=0){
-			wchar_t logBuf[128]={0};
+		if (g_MySqlProcessId != 0)
+		{
+			wchar_t logBuf[128] = {0};
 			swprintf_s(logBuf, 128, L"[路径二] 成功精准锁定目标 mysql.exe，PID: %lu", g_MySqlProcessId);
-			SendMessageW(hwnd,LB_ADDSTRING,0,(LPARAM)logBuf);
+			SendMessageW(hwnd, LB_ADDSTRING, 0, (LPARAM)logBuf);
 		}
-
 
 		WaitForSingleObject(pi.hProcess, INFINITE);
 		DWORD exitCode;
@@ -237,7 +238,17 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		}
 		case END_IMPORT_SQL_DATA:
 		{
-			Kill_Mysql_Process();
+			Kill_Mysql_Process(g_MySqlProcessId);
+			Kill_Mysql_Process(g_CmdProcessId);
+			g_MySqlProcessId = 0;
+			g_CmdProcessId = 0;
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"已结束导入");
+			break;
+		}
+		case CHECK_MYSQL_ENVIRONMENT:
+		{
+			Check_Mysql_Env();
+			break;
 		}
 		default:
 			return 0;
@@ -314,6 +325,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 /**
  * 浏览 获取sql文件路径
+ * Browse to get the SQL file path.
  */
 int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len)
 {
@@ -334,6 +346,7 @@ int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len)
 }
 /**
  * 清洗数据格式
+ * Data cleaning format
  */
 void CleanSpace(wchar_t *str)
 {
@@ -352,7 +365,53 @@ void CleanSpace(wchar_t *str)
 	if (start != str)
 		memmove(str, start, (wcslen(start) + 1) * sizeof(wchar_t));
 }
-
-void Kill_Mysql_Process(){
-	
+/**
+ * 结束导入
+ * Finsh Importing
+ */
+void Kill_Mysql_Process(DWORD sign)
+{
+	if (sign == 0)
+	{
+		SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"结束导入失败");
+		return;
+	}
+	HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, sign);
+	if (hProcess != NULL)
+	{
+		TerminateProcess(hProcess, 0);
+		CloseHandle(hProcess);
+	}
+}
+/**
+ * MYSQL环境监测
+ * MySQL Environment Monitoring
+ */
+void Check_Mysql_Env()
+{
+	SendMessage(LogList, LB_ADDSTRING, 0, (LPARAM)L"开始检测MySQL环境");
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags |= STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+	ZeroMemory(&pi, sizeof(pi));
+	wchar_t cmd[] = L"cmd.exe /c \"mysql --version\"";
+	if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+	{
+		DWORD waitResult = WaitForSingleObject(pi.hProcess, 2000);
+		DWORD exitCode = 1;
+		GetExitCodeProcess(pi.hProcess, &exitCode);
+		CloseHandle(pi.hProcess);
+		CloseHandle(pi.hThread);
+		if (waitResult == WAIT_OBJECT_0 && exitCode == 0)
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"本地 MySQL 环境配置正常");
+		}
+		else
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"未检测到 mysql 命令,请检查 PATH 环境变量");
+		}
+	}
 }
