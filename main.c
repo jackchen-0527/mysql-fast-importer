@@ -8,12 +8,18 @@
 #define CHOICE_SQL_FILE 1004
 #define START_IMPORT_SQL_DATA 1005
 #define END_IMPORT_SQL_DATA 1006
-#define CHECK_MYSQL_ENVIRONMENT 1007
+#define CHECK_MYSQL_ENVIRONMENT 10071	  // 检查mysql env
+#define CHECK_SQLSERVER_ENVIRONMENT 10072 // 检查mssql env
 #define LOG_LISTBOX_ID 1008
 #define LABEL_DBNAME 1009
+#define IDC_RADIO_MYSQL 1010	 // mysql
+#define IDC_RADIO_SQLSERVER 1011 // sql server
 HWND LogList = NULL;
 DWORD g_CmdProcessId = 0;	// cmd.exe  PID
 DWORD g_MySqlProcessId = 0; // mysql.exe PID
+DWORD g_MsSqlProcessId = 0; // mssql.exe PID
+int g_SelectedDbType = 1;	// 数据库类型选择项
+
 typedef struct
 {
 	HWND hwndParent;
@@ -21,6 +27,7 @@ typedef struct
 	wchar_t userName[128];
 	wchar_t passWord[128];
 	wchar_t filePath[MAX_PATH];
+	int dbType;
 
 } ImportParam;
 
@@ -28,9 +35,11 @@ int GeSQLtFilePath(HWND hwnd, wchar_t *file_path, DWORD max_len);
 void CleanSpace(wchar_t *str);
 void Kill_Mysql_Process(DWORD sign);
 void Check_Mysql_Env();
+void Check_Mssql_Env();
 DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 {
 	ImportParam *param = (ImportParam *)lpParam;
+	int dbtype = param->dbType;
 	HWND hwnd = param->hwndParent;
 	CleanSpace(param->dbName);
 	CleanSpace(param->userName);
@@ -43,14 +52,27 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 	WideCharToMultiByte(CP_ACP, 0, param->passWord, -1, cPass, sizeof(cPass), NULL, NULL);
 	WideCharToMultiByte(CP_ACP, 0, param->filePath, -1, cPath, sizeof(cPath), NULL, NULL);
 	char cmdLine[1024];
-	snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /c \"mysql -u %s -p%s %s < \"%s\"\"", cUser, cPass, cDB, cPath);
-	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"正在链接数据库，全力导入中...");
+	if (dbtype == 1)
+	{
+		snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /c \"mysql -u %s -p%s %s < \"%s\"\"", cUser, cPass, cDB, cPath);
+	}
+	else if (dbtype == 2)
+	{
+		snprintf(cmdLine, sizeof(cmdLine), "cmd.exe /c \"sqlcmd -S localhost -U %s -P %s -d %s -i \"%s\" -b\"", cUser, cPass, cDB, cPath);
+	}
+	else
+	{
+		SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM) "数据库类型错误");
+		return 0;
+	}
+
+	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"正在链接数据库，导入中...");
 	STARTUPINFOA si;
 	PROCESS_INFORMATION pi;
 	ZeroMemory(&si, sizeof(si));
 	si.cb = sizeof(si);
 	si.dwFlags |= STARTF_USESHOWWINDOW;
-	si.wShowWindow = SW_SHOW;
+	si.wShowWindow = SW_HIDE;
 	ZeroMemory(&pi, sizeof(pi));
 	if (CreateProcessA(NULL, cmdLine, NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi))
 	{
@@ -60,7 +82,7 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 		{
 			PROCESSENTRY32W pe;
 			pe.dwSize = sizeof(PROCESSENTRY32W);
-			if (Process32FirstW(hSnapshot, &pe))
+			if (Process32FirstW(hSnapshot, &pe) && dbtype == 1)
 			{
 				do
 				{
@@ -71,12 +93,29 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 					}
 				} while (Process32NextW(hSnapshot, &pe));
 			}
+			else
+			{
+				do
+				{
+					if (_wcsicmp(pe.szExeFile, L"sqlcmd.exe") == 0 && pe.th32ParentProcessID == g_CmdProcessId)
+					{
+						g_MsSqlProcessId = pe.th32ProcessID;
+						break;
+					}
+				} while (Process32NextW(hSnapshot, &pe));
+			}
 			CloseHandle(hSnapshot);
 		}
-		if (g_MySqlProcessId != 0)
+		if (dbtype == 1 && g_MySqlProcessId != 0)
 		{
 			wchar_t logBuf[128] = {0};
-			swprintf_s(logBuf, 128, L"[路径二] 成功精准锁定目标 mysql.exe，PID: %lu", g_MySqlProcessId);
+			swprintf_s(logBuf, 128, L"锁定目标 mysql.exe，PID: %lu", g_MySqlProcessId);
+			SendMessageW(hwnd, LB_ADDSTRING, 0, (LPARAM)logBuf);
+		}
+		else
+		{
+			wchar_t logBuf[128] = {0};
+			swprintf_s(logBuf, 128, L"锁定目标 sqlcmd.exe，PID: %lu", g_MsSqlProcessId);
 			SendMessageW(hwnd, LB_ADDSTRING, 0, (LPARAM)logBuf);
 		}
 
@@ -87,18 +126,18 @@ DWORD WINAPI BackgroundImportThread(LPVOID lpParam)
 		CloseHandle(pi.hThread);
 		if (exitCode == 0)
 		{
-			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"SQL文件已完美导入数据库");
-			MessageBoxW(hwnd, L"SQL 数据库文件导入成功！", L"恭喜", MB_OK | MB_ICONINFORMATION);
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"SQL文件已导入数据库");
+			MessageBoxW(hwnd, L"SQL 数据库文件导入成功", L"恭喜", MB_OK | MB_ICONINFORMATION);
 		}
 		else
 		{
-			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[失败,请检查用户名、密码或 MySQL 状态");
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[失败,请检查用户名、密码或 数据库 状态");
 			MessageBoxW(hwnd, L"导入失败！请检查配置或数据库环境。", L"错误", MB_OK | MB_ICONERROR);
 		}
 	}
 	else
 	{
-		SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"错误,无法调用系统 CMD 引擎。");
+		SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"错误,无法调用系统 CMD");
 	}
 	free(param);
 	return 0;
@@ -108,69 +147,103 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 {
 	switch (Message)
 	{
+
 	case WM_CREATE:
 	{
-		const int START_X = 20;
-		const int LABEL_WIDTH = 80;
-		const int EDIT_WIDTH = 180;
-		const int COMP_HEIGHT = 25;
-		const int LINE_SPACE = 40;
+		const int START_X = 25;		// 整体左边距
+		const int START_Y = 30;		// 整体上边距
+		const int LABEL_WIDTH = 90; // 左侧标签宽度
+		const int EDIT_WIDTH = 250; // 右侧输入框宽度
+		const int COMP_HEIGHT = 28; // 控件标准高度
+		const int LINE_SPACE = 44;	// 纵向行间距
 
-		CreateWindowW(L"STATIC", L"数据库名：",
-					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  START_X, 20, LABEL_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
-					  START_X + LABEL_WIDTH, 20, EDIT_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)LABEL_DBNAME, GetModuleHandle(NULL), NULL);
+		int currentY = START_Y;
 
-		CreateWindowW(L"STATIC", L"用 户 名：",
-					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  START_X, 60, LABEL_WIDTH, COMP_HEIGHT,
+		CreateWindowW(L"BUTTON", L" 数据库配置选项 ",
+					  WS_CHILD | WS_VISIBLE | BS_GROUPBOX,
+					  START_X - 12, START_Y - 18, LABEL_WIDTH + EDIT_WIDTH + 24, (LINE_SPACE * 5) + 12,
 					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
-					  START_X + LABEL_WIDTH, 60, EDIT_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)LABEL_USERNAME, GetModuleHandle(NULL), NULL);
 
-		CreateWindowW(L"STATIC", L"密    码：",
-					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  START_X, 100, LABEL_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"EDIT", L"",
-					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_PASSWORD | WS_TABSTOP,
-					  START_X + LABEL_WIDTH, 100, EDIT_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)LABEL_PASSWORD, GetModuleHandle(NULL), NULL);
+		// 数据库名
+		CreateWindowW(L"EDIT", L"  数据库名：", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_READONLY,
+					  START_X, currentY, LABEL_WIDTH, COMP_HEIGHT, hwnd, (HMENU)NULL, NULL, NULL);
+		CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
+					  START_X + LABEL_WIDTH, currentY, EDIT_WIDTH, COMP_HEIGHT, hwnd, (HMENU)LABEL_DBNAME, NULL, NULL);
 
-		CreateWindowW(L"STATIC", L"SQL 文件：",
-					  WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
-					  START_X, 140, LABEL_WIDTH, COMP_HEIGHT,
-					  hwnd, (HMENU)NULL, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"EDIT", L"尚未选择任何文件...",
-					  WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_READONLY,
-					  START_X + LABEL_WIDTH, 140, EDIT_WIDTH - 85, COMP_HEIGHT,
-					  hwnd, (HMENU)SQL_FILE_PATH, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"浏览...",
-					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  START_X + LABEL_WIDTH + (EDIT_WIDTH - 80), 140, 80, COMP_HEIGHT,
-					  hwnd, (HMENU)CHOICE_SQL_FILE, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"开始导入",
-					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  START_X, 185, 80, 30,
-					  hwnd, (HMENU)START_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"结束导入",
-					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  110, 185, 80, 30,
-					  hwnd, (HMENU)END_IMPORT_SQL_DATA, GetModuleHandle(NULL), NULL);
-		CreateWindowW(L"BUTTON", L"检测 MySQL 环境",
-					  WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-					  200, 185, 120, 30,
-					  hwnd, (HMENU)CHECK_MYSQL_ENVIRONMENT, GetModuleHandle(NULL), NULL);
+		// 用户名
+		currentY += LINE_SPACE;
+		CreateWindowW(L"EDIT", L"  用 户 名：", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_READONLY,
+					  START_X, currentY, LABEL_WIDTH, COMP_HEIGHT, hwnd, (HMENU)NULL, NULL, NULL);
+		CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | WS_TABSTOP,
+					  START_X + LABEL_WIDTH, currentY, EDIT_WIDTH, COMP_HEIGHT, hwnd, (HMENU)LABEL_USERNAME, NULL, NULL);
+
+		// 密码
+		currentY += LINE_SPACE;
+		CreateWindowW(L"EDIT", L"  密    码：", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_READONLY,
+					  START_X, currentY, LABEL_WIDTH, COMP_HEIGHT, hwnd, (HMENU)NULL, NULL, NULL);
+		CreateWindowW(L"EDIT", L"", WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_PASSWORD | WS_TABSTOP,
+					  START_X + LABEL_WIDTH, currentY, EDIT_WIDTH, COMP_HEIGHT, hwnd, (HMENU)LABEL_PASSWORD, NULL, NULL);
+
+		// SQL 文件选择
+		currentY += LINE_SPACE;
+		CreateWindowW(L"EDIT", L"  SQL 文件：", WS_CHILD | WS_VISIBLE | ES_LEFT | ES_READONLY,
+					  START_X, currentY, LABEL_WIDTH, COMP_HEIGHT, hwnd, (HMENU)NULL, NULL, NULL);
+		CreateWindowW(L"EDIT", L"尚未选择任何文件...", WS_CHILD | WS_VISIBLE | ES_LEFT | WS_BORDER | ES_READONLY,
+					  START_X + LABEL_WIDTH, currentY, EDIT_WIDTH - 80, COMP_HEIGHT, hwnd, (HMENU)SQL_FILE_PATH, NULL, NULL);
+		CreateWindowW(L"BUTTON", L"浏览...", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+					  START_X + LABEL_WIDTH + (EDIT_WIDTH - 75), currentY, 75, COMP_HEIGHT, hwnd, (HMENU)CHOICE_SQL_FILE, NULL, NULL);
+
+		// 数据库单选按钮
+		currentY += LINE_SPACE;
+		CreateWindowW(L"EDIT", L"  驱动类型：", WS_VISIBLE | WS_CHILD | ES_LEFT | ES_READONLY,
+					  START_X, currentY, LABEL_WIDTH, COMP_HEIGHT, hwnd, (HMENU)NULL, NULL, NULL);
+
+		CreateWindowW(L"BUTTON", L"MySQL", WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON | WS_GROUP,
+					  START_X + LABEL_WIDTH + 15, currentY, 90, COMP_HEIGHT, hwnd, (HMENU)IDC_RADIO_MYSQL, NULL, NULL);
+		CreateWindowW(L"BUTTON", L"SQL Server", WS_VISIBLE | WS_CHILD | BS_AUTORADIOBUTTON,
+					  START_X + LABEL_WIDTH + 115, currentY, 120, COMP_HEIGHT, hwnd, (HMENU)IDC_RADIO_SQLSERVER, NULL, NULL);
+
+		// 默认MySQL
+		CheckRadioButton(hwnd, IDC_RADIO_MYSQL, IDC_RADIO_SQLSERVER, IDC_RADIO_MYSQL);
+
+		currentY += LINE_SPACE + 25;
+
+		CreateWindowW(L"BUTTON", L"开始导入", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+					  START_X, currentY, 100, 35, hwnd, (HMENU)START_IMPORT_SQL_DATA, NULL, NULL);
+
+		CreateWindowW(L"BUTTON", L"结束导入", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+					  START_X + 115, currentY, 100, 35, hwnd, (HMENU)END_IMPORT_SQL_DATA, NULL, NULL);
+
+		CreateWindowW(L"BUTTON", L"检测MYSQL环境", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+					  START_X + 230, currentY, 110, 35, hwnd, (HMENU)CHECK_MYSQL_ENVIRONMENT, NULL, NULL);
+
+		CreateWindowW(L"BUTTON", L"检测MSSQL环境", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+					  START_X + 360, currentY, 110, 35, hwnd, (HMENU)CHECK_SQLSERVER_ENVIRONMENT, NULL, NULL);
+
+		currentY += 55;
+		CreateWindowW(L"STATIC", L"运行状态日志：", WS_CHILD | WS_VISIBLE | SS_LEFTNOWORDWRAP,
+					  START_X, currentY, LABEL_WIDTH + 100, 20, hwnd, (HMENU)NULL, NULL, NULL);
+
+		currentY += 25;
 		LogList = CreateWindowW(L"LISTBOX", L"",
 								WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL | LBS_NOTIFY,
-								START_X, 230, 300, 120,
-								hwnd, (HMENU)LOG_LISTBOX_ID, GetModuleHandle(NULL), NULL);
+								START_X, currentY, LABEL_WIDTH + EDIT_WIDTH, 140,
+								hwnd, (HMENU)LOG_LISTBOX_ID, NULL, NULL);
+
+		HFONT hFont = CreateFontW(18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+								  GB2312_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+								  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Microsoft YaHei");
+
+		if (hFont)
+		{
+			HWND hChild = GetWindow(hwnd, GW_CHILD);
+			while (hChild)
+			{
+				SendMessageW(hChild, WM_SETFONT, (WPARAM)hFont, TRUE);
+				hChild = GetWindow(hChild, GW_HWNDNEXT);
+			}
+		}
+
 		break;
 	}
 
@@ -178,6 +251,18 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 	{
 		switch (LOWORD(wParam))
 		{
+		case IDC_RADIO_MYSQL:
+		{
+			g_SelectedDbType = 1;
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"当前选择为Mysql数据库导入");
+			break;
+		}
+		case IDC_RADIO_SQLSERVER:
+		{
+			g_SelectedDbType = 2;
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"当前选择为SqlServer数据库导入");
+			break;
+		}
 		case CHOICE_SQL_FILE:
 		{
 			/* code */
@@ -215,13 +300,14 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 
 			if (wcslen(sql_file_path) == 0 || wcscmp(sql_file_path, L"尚未选择任何文件...") == 0)
 			{
-				MessageBoxW(hwnd, L"请先选择要导入的 SQL 文件！", L"提示", MB_OK | MB_ICONWARNING);
+				MessageBoxW(hwnd, L"请先选择要导入的 SQL 文件", L"提示", MB_OK | MB_ICONWARNING);
 				break;
 			}
 			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"[提示] 主线程就绪");
 
 			ImportParam *param = (ImportParam *)malloc(sizeof(ImportParam));
 			param->hwndParent = hwnd;
+			param->dbType = g_SelectedDbType;
 			wcscpy_s(param->dbName, 128, wait_clean_dbname);
 			wcscpy_s(param->userName, 128, wait_clean_username);
 			wcscpy_s(param->passWord, 128, wait_clean_password);
@@ -248,6 +334,11 @@ LRESULT CALLBACK WndProc(HWND hwnd, UINT Message, WPARAM wParam, LPARAM lParam)
 		case CHECK_MYSQL_ENVIRONMENT:
 		{
 			Check_Mysql_Env();
+			break;
+		}
+		case CHECK_SQLSERVER_ENVIRONMENT:
+		{
+			Check_Mssql_Env();
 			break;
 		}
 		default:
@@ -301,7 +392,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 						  CW_USEDEFAULT, /* x */
 						  CW_USEDEFAULT, /* y */
 						  640,			 /* width */
-						  480,			 /* height */
+						  530,			 /* height */
 						  NULL, NULL, hInstance, NULL);
 
 	if (hwnd == NULL)
@@ -389,7 +480,7 @@ void Kill_Mysql_Process(DWORD sign)
  */
 void Check_Mysql_Env()
 {
-	SendMessage(LogList, LB_ADDSTRING, 0, (LPARAM)L"开始检测MySQL环境");
+	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"开始检测MySQL环境");
 	STARTUPINFOW si;
 	PROCESS_INFORMATION pi;
 	ZeroMemory(&si, sizeof(si));
@@ -412,6 +503,35 @@ void Check_Mysql_Env()
 		else
 		{
 			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"未检测到 mysql 命令,请检查 PATH 环境变量");
+		}
+	}
+}
+/**
+ * SQL SERVER环境监测
+ * SQL SERVER Environment Monitoring
+ */
+void Check_Mssql_Env()
+{
+	SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"开始检测SqlServer环境");
+	STARTUPINFOW si;
+	PROCESS_INFORMATION pi;
+	ZeroMemory(&si, sizeof(si));
+	si.cb = sizeof(si);
+	si.dwFlags = STARTF_USESHOWWINDOW;
+	si.wShowWindow = SW_HIDE;
+	ZeroMemory(&pi, sizeof(pi));
+	wchar_t cmd[] = L"cmd.exe /c \"sqlcmd --version\"";
+	if (CreateProcessW(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi))
+	{
+		DWORD waitResult = WaitForSingleObject(pi.hProcess, 2000);
+		DWORD exitCode = 1;
+		if (waitResult == WAIT_OBJECT_0 && exitCode == 0)
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"本地 SqlServer 环境配置正常");
+		}
+		else
+		{
+			SendMessageW(LogList, LB_ADDSTRING, 0, (LPARAM)L"未检测到 SqlServer 命令,请检查 PATH 环境变量");
 		}
 	}
 }
